@@ -1,9 +1,5 @@
-import db from './db';
-import {
-  v1, v2, v3,
-} from './sql';
-
-const versions = [v1, v2, v3];
+import dbRef from './db';
+import versions from './sql';
 
 /**
  * this class decides what migrations to run and runs them
@@ -19,47 +15,50 @@ class RNSqliteMigrator {
     this._cursor = 0;
   }
 
-  _next() {
+  async _next() {
     if (this._versions[this._cursor]) {
       const next = this._versions[this._cursor];
-      this._migrationsMap[next].execute(this._db, () => {
+      console.log('Migrating to version', next);
+      await this._migrationsMap[next].execute(this._db, async () => {
         this._cursor += 1;
-        this._next();
+        await this._db.transaction(txn => {
+          txn.executeSql('UPDATE version SET version = :version', [next]);
+        });
+        await this._next();
       });
     } else {
+      console.log('Succesfully migrated to version', this._db.version);
       // done!
       this._cursor = 0;
       // update version stored in the database to current version
-      this._db.transaction(txn => {
+      await this._db.transaction(txn => {
         txn.executeSql('UPDATE version SET version = :version', [this._db.version]);
       });
     }
   }
 
   initialize() {
-    this._db.transaction(txn => {
-      txn.executeSql("SELECT name FROM sqlite_master WHERE type='table' AND name=:name", ['version'], (tx, result) => {
-        if (!result.rows.length) {
-          tx.executeSql('CREATE TABLE IF NOT EXISTS version (version INTEGER)');
-          tx.executeSql('CREATE INDEX IF NOT EXISTS version_idx ON version (version);');
-          tx.executeSql('INSERT INTO version (version) VALUES (:version)', [0]);
-          tx.executeSql('CREATE TABLE IF NOT EXISTS executed_migrations (migration INTEGER)');
-          tx.executeSql('CREATE INDEX IF NOT EXISTS migration_idx ON executed_migrations (migration);');
-          this.currentVersion = 0;
-        } else {
-          tx.executeSql('SELECT version FROM version LIMIT 1', [], (tx2, result2) => {
-            this.currentVersion = result2.rows.item(0).version;
-          });
-        }
-      });
-    }, error => console.error(error), this.migrate.bind(this));
+    this._db.transaction(
+      txn => {
+        txn.executeSql("SELECT name FROM sqlite_master WHERE type='table' AND name=:name", ['version'], (tx, result) => {
+          if (!result.rows.length) {
+            tx.executeSql('CREATE TABLE IF NOT EXISTS version (version INTEGER)');
+            tx.executeSql('CREATE INDEX IF NOT EXISTS version_idx ON version (version);');
+            tx.executeSql('INSERT INTO version (version) VALUES (:version)', [0]);
+            this.currentVersion = 0;
+          } else {
+            tx.executeSql('SELECT version FROM version LIMIT 1', [], (tx2, result2) => {
+              this.currentVersion = result2.rows.item(0).version;
+            });
+          }
+        });
+      },
+      error => console.error(error),
+    );
   }
 
-  migrate() {
-    if (typeof this.currentVersion === 'undefined') return; // haven't initialized yet
-    console.log('In migrate, we have initialized');
-    console.log('current verson', this.currentVersion);
-    console.log('db version', this._db.version);
+  migrate = async () => {
+    // if (typeof this.currentVersion === 'undefined') return; // haven't initialized yet
 
     if (this._cursor === 0 && this.currentVersion < this._db.version) {
       let found = false;
@@ -70,18 +69,8 @@ class RNSqliteMigrator {
           found = true;
         }
       });
-      /*
-      for (let i = 0; i < this._versions.length && !found; i++) {
-        if (this.currentVersion >= this._versions[i]) {
-          this._cursor = i + 1;
-        } else {
-          found = true;
-        }
-      }
-      */
-
       // call migrations
-      this._next();
+      await this._next();
     }
   }
 
@@ -105,26 +94,41 @@ class RNSqliteMigration {
     this.sql = sql;
   }
 
-  execute = (db, next) => {
-    function exec(tx, sql) {
-      tx.executeSql(sql);
-    }
-
-    db.transaction(txn => {
-      txn.executeSql('SELECT migration FROM executed_migrations WHERE migration=:migration', [this.version], (tx, result) => {
-        if (!result.rows.length) {
-          if (Array.isArray(this.sql)) {
-            this.sql.forEach(s => exec(tx, s));
-          } else {
-            exec(tx, this.sql);
+  execute = async (db, next) => {
+    return new Promise((resolve, reject) => {
+      db.transaction(
+        async (txn) => {
+          let { sql } = this;
+          if (!Array.isArray(sql)) {
+            sql = [sql];
           }
-          tx.executeSql('INSERT INTO executed_migrations (migration) VALUES (:migration)', [this.version]);
-        }
-      });
-    }, error => {
-      console.log('error eecuting migration', error);
-      next(error);
-    }, next);
+          const sqlExecutions = this.sql.map((sqlString) => (
+            new Promise((resolveEx, rejectEx) => {
+              txn.executeSql(
+                sqlString,
+                [],
+                resolveEx,
+                (_, err) => {
+                  console.log('SQL failed to run', err);
+                  rejectEx();
+                },
+              );
+            })
+          ));
+          sqlExecutions.forEach(async (prom) => {
+            await prom;
+          });
+        },
+        error => {
+          console.log('Error executing migration', error);
+          reject(error);
+        },
+        async () => {
+          await next();
+          resolve();
+        },
+      );
+    });
   }
 }
 
@@ -134,21 +138,10 @@ class RNSqliteMigration {
  */
 const migrations = versions.map((version, index) => new RNSqliteMigration(index + 1, version));
 
-const migrator = new RNSqliteMigrator(db);
+const migrator = new RNSqliteMigrator(dbRef);
 migrations.forEach(migration => {
   migrator.up(migration);
 });
 
 
 export default migrator;
-/*
-// attempt to run migrations anytime the app state changes to active
-// if there are new migrations to run (ie, your user has updated the app
-// and there are new migrations) then the migrator will run only those
-// migrations
-AppState.addEventListener('change', () => {
-  if (AppState.currentState === 'active') {
-    migrator.migrate();
-  }
-});
-*/

@@ -1,42 +1,28 @@
 import React from 'react';
 import PropTypes from 'prop-types';
+import { connect } from 'react-redux';
 import {
   ScrollView,
   Text,
   View,
 } from 'react-native';
 import s from '../../styles';
-import db from '../../database/db';
+import { fetchGroupMeta } from '../../reducers/groupMeta';
 
 class Home extends React.Component {
   static navigationOptions = {
     header: null,
   };
 
-  state = {
-    test: null,
-  }
+  state = {}
 
   componentDidMount() {
-    db.transaction(tx => {
-      tx.executeSql(
-        'select * from anothertest',
-        [],
-        (_, res) => {
-          console.log('res from sqlite', res);
-          // this.setState({ items: _array })
-        },
-        (_, res) => {
-          console.log('ERROR res', res);
-        }
-      );
-    });
-
+    this.props.fetchGroupMeta();
   }
 
 
   render() {
-    console.log('test', this.state.test);
+    console.log('test', this.props.groupMeta);
     return (
       <View style={s.appRoot}>
         <ScrollView>
@@ -53,6 +39,16 @@ class Home extends React.Component {
 
 Home.propTypes = {
   navigation: PropTypes.object,
+  groupMeta: PropTypes.object,
+  fetchGroupMeta: PropTypes.func,
 };
 
-export default Home;
+const mapStateToProps = state => ({
+  groupMeta: state.groupMeta,
+});
+
+const mapDispatchToProps = {
+  fetchGroupMeta,
+};
+
+export default connect(mapStateToProps, mapDispatchToProps)(Home);
